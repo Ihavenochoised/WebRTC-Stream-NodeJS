@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote Desktop Viewer</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1a1a1a;
+            color: white;
+            overflow: hidden;
+        }
+
+        .header {
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+
+        .title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+        }
+
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+        }
+
+        .status-dot.connected {
+            background: #10b981;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-connect {
+            background: #7e22ce;
+            color: white;
+        }
+
+        .btn-connect:hover {
+            background: #6b21a8;
+        }
+
+        .btn-disconnect {
+            background: #dc2626;
+            color: white;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: calc(100vh - 60px);
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        video {
+            max-width: 100%;
+            max-height: 100%;
+            cursor: none;
+        }
+
+        .connecting-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-size: 18px;
+            opacity: 0.7;
+        }
+
+        .cursor {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+            z-index: 100;
+            display: none;
+        }
+
+        .cursor::before {
+            content: '';
+            position: absolute;
+            width: 0;
+            height: 0;
+            border-left: 10px solid white;
+            border-right: 10px solid transparent;
+            border-top: 10px solid white;
+            border-bottom: 10px solid transparent;
+            filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.5));
+        }
+
+        .log-panel {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px;
+            border-radius: 8px;
+            max-width: 300px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 11px;
+            font-family: monospace;
+        }
+
+        .log-entry {
+            margin-bottom: 3px;
+            color: #4ade80;
+        }
+
+        input#roomIdInput {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid #444;
+            background: #2a2a2a;
+            color: white;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div class="title">🖥️ Remote Desktop Viewer</div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Disconnected</span>
+            </div>
+            <div class="stat">
+                📊 <span id="fpsText">0 FPS</span>
+            </div>
+            <div class="stat">
+                🌐 <span id="bitrateText">0 kb/s</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <input type="text" id="roomIdInput" placeholder="Room ID" value="desktop-session-1">
+            <button class="btn-connect" id="connectBtn" onclick="connect()">Connect</button>
+            <button class="btn-disconnect" id="disconnectBtn" onclick="disconnect()"
+                style="display:none;">Disconnect</button>
+        </div>
+    </div>
+
+    <div class="video-container" id="videoContainer">
+        <div class="connecting-message" id="connectingMsg">
+            Enter room ID and click Connect
+        </div>
+        <video id="remoteVideo" autoplay playsinline></video>
+        <div class="cursor" id="cursor"></div>
+    </div>
+
+    <div class="log-panel" id="logPanel"></div>
+
+    <script>
+        let socket;
+        let peerConnection;
+        let dataChannel;
+        let connected = false;
+        let roomId = 'desktop-session-1';
+        let videoElement;
+        let statsInterval;
+
+        const config = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
+            ],
+            iceCandidatePoolSize: 10
+        };
+
+        function addLog(message) {
+            const logPanel = document.getElementById('logPanel');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `${time}: ${message}`;
+            logPanel.appendChild(entry);
+            logPanel.scrollTop = logPanel.scrollHeight;
+
+            while (logPanel.children.length > 20) {
+                logPanel.removeChild(logPanel.firstChild);
+            }
+        }
+
+        function updateStatus(status, isConnected) {
+            document.getElementById('statusText').textContent = status;
+            document.getElementById('statusDot').classList.toggle('connected', isConnected);
+        }
+
+        function connect() {
+            roomId = document.getElementById('roomIdInput').value.trim();
+            if (!roomId) {
+                addLog('❌ Please enter a room ID');
+                return;
+            }
+
+            addLog('🔌 Connecting to signaling server...');
+            updateStatus('Connecting...', false);
+            document.getElementById('connectingMsg').textContent = 'Connecting to server...';
+
+            socket = io();
+
+            socket.on('connect', () => {
+                addLog('✅ Connected to signaling server');
+                socket.emit('join-room', { roomId, role: 'viewer' });
+            });
+
+            socket.on('joined', ({ role }) => {
+                addLog(`✅ Joined room as ${role}`);
+                document.getElementById('connectingMsg').textContent = 'Waiting for host...';
+            });
+
+            socket.on('host-ready', () => {
+                addLog('🎥 Host is ready');
+            });
+
+            socket.on('signal', async ({ from, signal }) => {
+                await handleSignal(signal, from);
+            });
+
+            socket.on('host-disconnected', () => {
+                addLog('❌ Host disconnected');
+                disconnect();
+            });
+
+            document.getElementById('connectBtn').style.display = 'none';
+            document.getElementById('disconnectBtn').style.display = 'block';
+            document.getElementById('roomIdInput').disabled = true;
+        }
+
+        async function handleSignal(signal, from) {
+            addLog(`📨 Received signal: ${signal.type}`);
+
+            if (signal.type === 'offer') {
+                addLog('🎬 Creating peer connection...');
+                peerConnection = new RTCPeerConnection(config);
+                setupPeerConnection(from);
+
+                await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                    type: 'offer',
+                    sdp: signal.sdp
+                }));
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                socket.emit('signal', {
+                    roomId,
+                    to: from,
+                    signal: { type: 'answer', sdp: answer.sdp }
+                });
+
+                addLog('📤 Sent answer to host');
+            } else if (signal.type === 'ice-candidate') {
+                if (peerConnection && peerConnection.remoteDescription) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                }
+            }
+        }
+
+        function setupPeerConnection(peerId) {
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    addLog(`🧊 ICE candidate: ${event.candidate.type}`);
+                    socket.emit('signal', {
+                        roomId,
+                        to: peerId,
+                        signal: { type: 'ice-candidate', candidate: event.candidate }
+                    });
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                addLog(`❄️ ICE state: ${peerConnection.iceConnectionState}`);
+            };
+
+            peerConnection.onconnectionstatechange = () => {
+                addLog(`🔗 Connection: ${peerConnection.connectionState}`);
+
+                if (peerConnection.connectionState === 'connected') {
+                    connected = true;
+                    updateStatus('Connected', true);
+                    document.getElementById('connectingMsg').style.display = 'none';
+                    addLog('✅ WebRTC connected!');
+                    startStatsMonitoring();
+                } else if (peerConnection.connectionState === 'failed' ||
+                    peerConnection.connectionState === 'disconnected') {
+                    connected = false;
+                    updateStatus('Connection failed', false);
+                    addLog('❌ Connection failed');
+                }
+            };
+
+            peerConnection.ontrack = (event) => {
+                addLog('📺 Received video track');
+                videoElement = document.getElementById('remoteVideo');
+                videoElement.srcObject = event.streams[0];
+                setupInputCapture();
+            };
+
+            peerConnection.ondatachannel = (event) => {
+                dataChannel = event.channel;
+                addLog('📡 Data channel opened');
+
+                dataChannel.onclose = () => {
+                    addLog('📡 Data channel closed');
+                };
+            };
+        }
+
+        function setupInputCapture() {
+            const video = document.getElementById('remoteVideo');
+            const container = document.getElementById('videoContainer');
+
+            // Mouse move
+            container.addEventListener('mousemove', (e) => {
+                if (!connected || !dataChannel) return;
+
+                const rect = video.getBoundingClientRect();
+                const x = ((e.clientX - rect.left) / rect.width) * 100;
+                const y = ((e.clientY - rect.top) / rect.height) * 100;
+
+                if (x >= 0 && x <= 100 && y >= 0 && y <= 100) {
+                    sendInput({ type: 'mousemove', x, y });
+                }
+            });
+
+            // Mouse buttons
+            container.addEventListener('mousedown', (e) => {
+                if (!connected || !dataChannel) return;
+                e.preventDefault();
+                sendInput({ type: 'mousedown', button: e.button });
+            });
+
+            container.addEventListener('mouseup', (e) => {
+                if (!connected || !dataChannel) return;
+                e.preventDefault();
+                sendInput({ type: 'mouseup', button: e.button });
+            });
+
+            // Context menu
+            container.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+            });
+
+            // Mouse wheel
+            container.addEventListener('wheel', (e) => {
+                if (!connected || !dataChannel) return;
+                e.preventDefault();
+                sendInput({ type: 'wheel', deltaY: e.deltaY });
+            });
+
+            // Keyboard
+            document.addEventListener('keydown', (e) => {
+                if (!connected || !dataChannel) return;
+                e.preventDefault();
+
+                const modifiers = [];
+                if (e.ctrlKey) modifiers.push('control');
+                if (e.shiftKey) modifiers.push('shift');
+                if (e.altKey) modifiers.push('alt');
+                if (e.metaKey) modifiers.push('command');
+
+                sendInput({
+                    type: 'keydown',
+                    key: e.key.toLowerCase(),
+                    modifiers
+                });
+            });
+
+            document.addEventListener('keyup', (e) => {
+                if (!connected || !dataChannel) return;
+                e.preventDefault();
+                sendInput({ type: 'keyup', key: e.key.toLowerCase() });
+            });
+
+            addLog('🎮 Input capture enabled');
+        }
+
+        function sendInput(event) {
+            if (dataChannel && dataChannel.readyState === 'open') {
+                dataChannel.send(JSON.stringify(event));
+            }
+        }
+
+        function startStatsMonitoring() {
+            let lastBytes = 0;
+            let frameCount = 0;
+
+            statsInterval = setInterval(async () => {
+                if (!peerConnection) return;
+
+                const stats = await peerConnection.getStats();
+                stats.forEach(report => {
+                    if (report.type === 'inbound-rtp' && report.mediaType === 'video') {
+                        // Bitrate
+                        const bytes = report.bytesReceived || 0;
+                        const bitrate = Math.round(((bytes - lastBytes) * 8) / 1000);
+                        lastBytes = bytes;
+                        document.getElementById('bitrateText').textContent = `${bitrate} kb/s`;
+
+                        // FPS
+                        if (report.framesPerSecond) {
+                            document.getElementById('fpsText').textContent = `${report.framesPerSecond} FPS`;
+                        }
+                    }
+                });
+            }, 1000);
+        }
+
+        function disconnect() {
+            connected = false;
+
+            if (statsInterval) {
+                clearInterval(statsInterval);
+            }
+
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+
+            const video = document.getElementById('remoteVideo');
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+
+            updateStatus('Disconnected', false);
+            document.getElementById('connectingMsg').style.display = 'block';
+            document.getElementById('connectingMsg').textContent = 'Disconnected';
+            document.getElementById('connectBtn').style.display = 'block';
+            document.getElementById('disconnectBtn').style.display = 'none';
+            document.getElementById('roomIdInput').disabled = false;
+            document.getElementById('fpsText').textContent = '0 FPS';
+            document.getElementById('bitrateText').textContent = '0 kb/s';
+
+            addLog('🔌 Disconnected');
+        }
+    </script>
+</body>
+
+</html>

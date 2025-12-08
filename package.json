@@ -1,0 +1,12 @@
+{
+    "name": "windows-remote-desktop-host",
+    "version": "1.0.0",
+    "main": "host.js",
+    "dependencies": {
+        "socket.io-client": "^4.6.1",
+        "wrtc": "^0.4.7",
+        "screenshot-desktop": "^1.12.7",
+        "robotjs": "^0.6.0",
+        "canvas": "^2.11.2"
+    }
+}
