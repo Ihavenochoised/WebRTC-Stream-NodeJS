@@ -1,12 +1,18 @@
 {
-    "name": "windows-remote-desktop-host",
-    "version": "1.0.0",
-    "main": "host.js",
-    "dependencies": {
-        "socket.io-client": "^4.6.1",
-        "wrtc": "^0.4.7",
-        "screenshot-desktop": "^1.12.7",
-        "robotjs": "^0.6.0",
-        "canvas": "^2.11.2"
-    }
+  "name": "remote-desktop-simple",
+  "version": "1.0.0",
+  "description": "Simple view-only screen streaming",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "host": "node host-simple.js",
+    "host-ffmpeg": "node host-ffmpeg.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1",
+    "socket.io-client": "^4.6.1",
+    "screenshot-desktop": "^1.12.7",
+    "sharp": "^0.33.0"
+  }
 }
