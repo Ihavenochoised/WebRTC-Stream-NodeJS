@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote Desktop Host</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container {
+      background: rgba(0, 0, 0, 0.3);
+      backdrop-filter: blur(10px);
+      padding: 40px;
+      border-radius: 20px;
+      max-width: 600px;
+      width: 90%;
+      text-align: center;
+    }
+    h1 { margin-bottom: 10px; font-size: 32px; }
+    .subtitle { opacity: 0.9; margin-bottom: 30px; }
+    .status {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 20px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+    }
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    .status-item:last-child { margin-bottom: 0; }
+    .label { opacity: 0.7; }
+    .value { font-weight: bold; }
+    button {
+      padding: 15px 40px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+      width: 100%;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.3); }
+    .btn-danger {
+      background: #dc2626;
+      color: white;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: none;
+      background: rgba(255, 255, 255, 0.9);
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+    .log {
+      background: rgba(0, 0, 0, 0.5);
+      padding: 15px;
+      border-radius: 10px;
+      margin-top: 20px;
+      height: 200px;
+      overflow-y: auto;
+      font-size: 12px;
+      font-family: monospace;
+      text-align: left;
+    }
+    .log-entry { margin-bottom: 5px; color: #4ade80; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🖥️ Remote Desktop Host</h1>
+    <p class="subtitle">WebRTC Screen Streaming</p>
+    
+    <div class="status">
+      <div class="status-item">
+        <span class="label">Status:</span>
+        <span class="value" id="status">Offline</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Room ID:</span>
+        <span class="value" id="roomDisplay">-</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Viewers:</span>
+        <span class="value" id="viewerCount">0</span>
+      </div>
+    </div>
+    
+    <input type="text" id="roomInput" placeholder="Enter Room ID" value="my-desktop">
+    <button class="btn-primary" id="startBtn" onclick="startHosting()">Start Hosting</button>
+    <button class="btn-danger" id="stopBtn" onclick="stopHosting()" style="display:none;">Stop Hosting</button>
+    
+    <div class="log" id="log"></div>
+  </div>
+
+  <script>
+    let socket;
+    let peerConnections = new Map();
+    let stream = null;
+    let roomId = 'my-desktop';
+
+    const config = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        // Multiple TURN servers for better connectivity
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        // Backup TURN server
+        {
+          urls: 'turn:numb.viagenie.ca',
+          username: 'webrtc@live.com',
+          credential: 'muazkh'
+        }
+      ],
+      iceCandidatePoolSize: 10
+    };
+
+    function addLog(msg) {
+      const log = document.getElementById('log');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.textContent = `${new Date().toLocaleTimeString()}: ${msg}`;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function startHosting() {
+      roomId = document.getElementById('roomInput').value.trim();
+      if (!roomId) {
+        alert('Please enter a room ID');
+        return;
+      }
+
+      addLog('Requesting screen capture...');
+      
+      try {
+        // Capture screen with high frame rate
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            displaySurface: 'monitor',
+            frameRate: { ideal: 60, max: 60 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
+          audio: false
+        });
+        
+        addLog('✅ Screen capture started!');
+        
+        // Connect to signaling server
+        socket = io();
+        
+        socket.on('connect', () => {
+          addLog('✅ Connected to server');
+          socket.emit('join-room', { roomId, role: 'host' });
+        });
+
+        socket.on('joined', () => {
+          addLog(`✅ Hosting room: ${roomId}`);
+          document.getElementById('status').textContent = 'Online';
+          document.getElementById('roomDisplay').textContent = roomId;
+          document.getElementById('startBtn').style.display = 'none';
+          document.getElementById('stopBtn').style.display = 'block';
+          document.getElementById('roomInput').disabled = true;
+        });
+
+        socket.on('viewer-joined', async ({ viewerId }) => {
+          addLog(`👀 Viewer joined: ${viewerId}`);
+          await createPeerConnection(viewerId);
+        });
+
+        socket.on('signal', async ({ from, signal }) => {
+          await handleSignal(from, signal);
+        });
+
+      } catch (error) {
+        addLog(`❌ Error: ${error.message}`);
+        alert('Screen capture failed. Make sure you select a screen to share.');
+      }
+    }
+
+    async function createPeerConnection(viewerId) {
+      addLog(`🔗 Creating connection to ${viewerId}`);
+      
+      const pc = new RTCPeerConnection(config);
+      peerConnections.set(viewerId, pc);
+
+      // Add screen stream
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+        addLog(`➕ Added ${track.kind} track`);
+      });
+
+      // ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('signal', {
+            roomId,
+            to: viewerId,
+            signal: { type: 'ice-candidate', candidate: event.candidate }
+          });
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        addLog(`❄️ ICE state (${viewerId}): ${pc.iceConnectionState}`);
+      };
+
+      pc.onconnectionstatechange = () => {
+        addLog(`🔗 Connection (${viewerId}): ${pc.connectionState}`);
+        if (pc.connectionState === 'connected') {
+          document.getElementById('viewerCount').textContent = peerConnections.size;
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          peerConnections.delete(viewerId);
+          document.getElementById('viewerCount').textContent = peerConnections.size;
+        }
+      };
+
+      // Create offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      socket.emit('signal', {
+        roomId,
+        to: viewerId,
+        signal: { type: 'offer', sdp: offer.sdp }
+      });
+      
+      addLog('📤 Offer sent');
+    }
+
+    async function handleSignal(from, signal) {
+      const pc = peerConnections.get(from);
+      if (!pc) return;
+
+      if (signal.type === 'answer') {
+        addLog('📥 Answer received');
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
+      } else if (signal.type === 'ice-candidate') {
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        }
+      }
+    }
+
+    function stopHosting() {
+      addLog('⏸️ Stopping...');
+      
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      
+      peerConnections.forEach(pc => pc.close());
+      peerConnections.clear();
+      
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+      }
+      
+      document.getElementById('status').textContent = 'Offline';
+      document.getElementById('roomDisplay').textContent = '-';
+      document.getElementById('viewerCount').textContent = '0';
+      document.getElementById('startBtn').style.display = 'block';
+      document.getElementById('stopBtn').style.display = 'none';
+      document.getElementById('roomInput').disabled = false;
+      
+      addLog('✅ Stopped');
+    }
+  </script>
+</body>
+</html>
